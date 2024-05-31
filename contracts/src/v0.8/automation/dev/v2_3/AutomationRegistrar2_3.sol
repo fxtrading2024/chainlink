@@ -120,20 +120,7 @@ contract AutomationRegistrar2_3 is TypeAndVersionInterface, ConfirmedOwner, IERC
   mapping(bytes32 => PendingRequest) private s_pendingRequests;
   mapping(uint8 => TriggerRegistrationStorage) private s_triggerRegistrations;
 
-  event RegistrationRequested(
-    bytes32 indexed hash,
-    string name,
-    bytes encryptedEmail,
-    address indexed upkeepContract,
-    uint32 gasLimit,
-    address adminAddress,
-    uint8 triggerType,
-    bytes triggerConfig,
-    bytes offchainConfig,
-    bytes checkData,
-    uint96 amount,
-    IERC20 billingToken
-  );
+  event RegistrationRequested(bytes32 indexed hash, RegistrationParams registrationParams);
 
   event RegistrationApproved(bytes32 indexed hash, string displayName, uint256 indexed upkeepId);
 
@@ -362,20 +349,7 @@ contract AutomationRegistrar2_3 is TypeAndVersionInterface, ConfirmedOwner, IERC
       revert DuplicateEntry();
     }
 
-    emit RegistrationRequested(
-      hash,
-      params.name,
-      params.encryptedEmail,
-      params.upkeepContract,
-      params.gasLimit,
-      params.adminAddress,
-      params.triggerType,
-      params.triggerConfig,
-      params.offchainConfig,
-      params.checkData,
-      params.amount,
-      params.billingToken
-    );
+    emit RegistrationRequested(hash, params);
 
     uint256 upkeepId;
     if (_shouldAutoApprove(s_triggerRegistrations[params.triggerType], sender)) {
