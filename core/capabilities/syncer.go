@@ -29,6 +29,7 @@ type registrySyncer struct {
 	peerWrapper  p2ptypes.PeerWrapper
 	registry     core.CapabilitiesRegistry
 	dispatcher   remotetypes.Dispatcher
+	stopCh       services.StopChan
 	subServices  []services.Service
 	networkSetup HardcodedDonNetworkSetup
 
@@ -37,6 +38,10 @@ type registrySyncer struct {
 }
 
 var _ services.Service = &registrySyncer{}
+
+var (
+	defaultTickInterval = time.Duration(12 * time.Minute)
+)
 
 var defaultStreamConfig = p2ptypes.StreamConfig{
 	IncomingMessageBufferSize: 1000000,
@@ -58,6 +63,7 @@ const maxRetryCount = 60
 func NewRegistrySyncer(peerWrapper p2ptypes.PeerWrapper, registry core.CapabilitiesRegistry, dispatcher remotetypes.Dispatcher, lggr logger.Logger,
 	networkSetup HardcodedDonNetworkSetup) *registrySyncer {
 	return &registrySyncer{
+		stopCh:       make(services.StopChan),
 		peerWrapper:  peerWrapper,
 		registry:     registry,
 		dispatcher:   dispatcher,
@@ -67,15 +73,54 @@ func NewRegistrySyncer(peerWrapper p2ptypes.PeerWrapper, registry core.Capabilit
 }
 
 func (s *registrySyncer) Start(ctx context.Context) error {
-	s.wg.Add(1)
-	go s.launch(ctx)
+	s.wg.Add(2)
+	go s.launch()
+	go s.syncLoop()
+	return nil
+}
+
+func (s *registrySyncer) syncLoop() {
+	defer s.wg.Done()
+
+	ctx, cancel := s.stopCh.NewCtx()
+	defer cancel()
+
+	ticker := time.NewTicker(defaultTickInterval)
+	defer ticker.Stop()
+
+	// Sync for a first time outside the loop; this means we'll start a remote
+	// sync immediately once spinning up syncLoop, as by default a ticker will
+	// fire for the first time at T+N, where N is the interval.
+	s.lggr.Debug("starting initial sync with remote registry")
+	err := s.sync(ctx)
+	if err != nil {
+		s.lggr.Errorw("failed to sync with remote registry", "error", err)
+	}
+
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.lggr.Debug("starting regular sync with the remote registry")
+			err := s.sync(ctx)
+			if err != nil {
+				s.lggr.Errorw("failed to sync with remote registry", "error", err)
+			}
+		}
+	}
+}
+
+func (s *registrySyncer) sync(ctx context.Context) error {
 	return nil
 }
 
 // NOTE: this implementation of the Syncer is temporary and will be replaced by one
 // that reads the configuration from chain (KS-117).
-func (s *registrySyncer) launch(ctx context.Context) {
+func (s *registrySyncer) launch() {
+	ctx, _ := s.stopCh.NewCtx()
 	defer s.wg.Done()
+
 	capId := "streams-trigger"
 	triggerInfo, err := capabilities.NewRemoteCapabilityInfo(
 		capId,

@@ -220,7 +220,6 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 		// NOTE: RegistrySyncer will depend on a Relayer when fully implemented
 		dispatcher := remote.NewDispatcher(externalPeerWrapper, signer, opts.CapabilitiesRegistry, globalLogger)
 		registrySyncer := capabilities.NewRegistrySyncer(externalPeerWrapper, opts.CapabilitiesRegistry, dispatcher, globalLogger, networkSetup)
-
 		srvcs = append(srvcs, dispatcher, registrySyncer)
 	}
 

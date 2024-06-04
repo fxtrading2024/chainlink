@@ -129,6 +129,7 @@ func (entry *codecEntry) Init() (err error) {
 		}
 
 		tmp := arg
+		fmt.Printf("%+v", tmp)
 		nativeArg, checkedArg, err := getNativeAndCheckedTypesForArg(&tmp)
 		if err != nil {
 			return err
@@ -262,6 +263,7 @@ func createTupleType(curType *abi.Type, converter func(reflect.Type) reflect.Typ
 		nativeFields[i].Type = nativeArgType
 		checkedFields[i].Type = checkedArgType
 	}
+	fmt.Printf("%+v\n%+v\n", nativeFields, checkedFields)
 	return converter(structOfPointers(nativeFields)), converter(structOfPointers(checkedFields)), nil
 }
 
