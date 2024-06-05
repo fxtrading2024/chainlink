@@ -129,7 +129,6 @@ func (entry *codecEntry) Init() (err error) {
 		}
 
 		tmp := arg
-		fmt.Printf("%+v", tmp)
 		nativeArg, checkedArg, err := getNativeAndCheckedTypesForArg(&tmp)
 		if err != nil {
 			return err

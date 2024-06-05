@@ -25,6 +25,10 @@ import (
 	p2ptypes "github.com/smartcontractkit/chainlink/v2/core/services/p2p/types"
 )
 
+type reader interface {
+	state(ctx context.Context) (state, error)
+}
+
 type registrySyncer struct {
 	peerWrapper  p2ptypes.PeerWrapper
 	registry     core.CapabilitiesRegistry
@@ -32,6 +36,7 @@ type registrySyncer struct {
 	stopCh       services.StopChan
 	subServices  []services.Service
 	networkSetup HardcodedDonNetworkSetup
+	reader       reader
 
 	wg   sync.WaitGroup
 	lggr logger.Logger
@@ -60,8 +65,13 @@ var defaultStreamConfig = p2ptypes.StreamConfig{
 const maxRetryCount = 60
 
 // RegistrySyncer updates local Registry to match its onchain counterpart
-func NewRegistrySyncer(peerWrapper p2ptypes.PeerWrapper, registry core.CapabilitiesRegistry, dispatcher remotetypes.Dispatcher, lggr logger.Logger,
-	networkSetup HardcodedDonNetworkSetup) *registrySyncer {
+func NewRegistrySyncer(
+	peerWrapper p2ptypes.PeerWrapper,
+	registry core.CapabilitiesRegistry,
+	dispatcher remotetypes.Dispatcher,
+	lggr logger.Logger,
+	networkSetup HardcodedDonNetworkSetup,
+) *registrySyncer {
 	return &registrySyncer{
 		stopCh:       make(services.StopChan),
 		peerWrapper:  peerWrapper,
@@ -112,6 +122,11 @@ func (s *registrySyncer) syncLoop() {
 }
 
 func (s *registrySyncer) sync(ctx context.Context) error {
+	_, err := s.reader.state(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to sync with remote registry: %w", err)
+	}
+
 	return nil
 }
 

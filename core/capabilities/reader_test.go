@@ -135,54 +135,51 @@ func TestReader(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	it, err := reg.FilterNodeOperatorAdded(&bind.FilterOpts{}, []common.Address{})
-	require.NoError(t, err)
-
-	it.Next()
-
 	nodeSet := [][32]byte{
 		randomWord(),
 		randomWord(),
 		randomWord(),
 	}
 
-	_, err = reg.AddNodes(owner, []kcr.CapabilityRegistryNodeInfo{
+	nodes := []kcr.CapabilityRegistryNodeInfo{
 		{
-			NodeOperatorId:      uint32(it.Event.NodeOperatorId.Int64()),
+			// The first NodeOperatorId has id 1 since the id is auto-incrementing.
+			NodeOperatorId:      uint32(1),
 			Signer:              randomWord(),
-			P2pId:               randomWord(),
+			P2pId:               nodeSet[0],
 			HashedCapabilityIds: [][32]byte{cid},
 		},
 		{
-			NodeOperatorId:      uint32(it.Event.NodeOperatorId.Int64()),
+			// The first NodeOperatorId has id 1 since the id is auto-incrementing.
+			NodeOperatorId:      uint32(1),
 			Signer:              randomWord(),
-			P2pId:               randomWord(),
+			P2pId:               nodeSet[1],
 			HashedCapabilityIds: [][32]byte{cid},
 		},
 		{
-			NodeOperatorId:      uint32(it.Event.NodeOperatorId.Int64()),
+			// The first NodeOperatorId has id 1 since the id is auto-incrementing.
+			NodeOperatorId:      uint32(1),
 			Signer:              randomWord(),
-			P2pId:               randomWord(),
+			P2pId:               nodeSet[2],
 			HashedCapabilityIds: [][32]byte{cid},
 		},
-	})
+	}
+	_, err = reg.AddNodes(owner, nodes)
 	require.NoError(t, err)
 
+	cfgs := []kcr.CapabilityRegistryCapabilityConfiguration{
+		{
+			CapabilityId: cid,
+			Config:       []byte(`{"hello": "world"}`),
+		},
+	}
 	_, err = reg.AddDON(
 		owner,
 		nodeSet,
-		[]kcr.CapabilityRegistryCapabilityConfiguration{
-			{
-				CapabilityId: cid,
-				Config:       []byte(`{"hello": "world"}`),
-			},
-		},
+		cfgs,
 		true,
 	)
-
-	h := sim.Commit()
-	tx, _, _ := sim.TransactionByHash(ctx, h)
-	fmt.Printf("%+v", tx)
+	sim.Commit()
 
 	require.NoError(t, err)
 
@@ -196,4 +193,16 @@ func TestReader(t *testing.T) {
 
 	gotCap := s.Capabilities[0]
 	assert.Equal(t, writeChainCapability, gotCap)
+
+	assert.Len(t, s.DONs, 1)
+	assert.Equal(t, kcr.CapabilityRegistryDONInfo{
+		Id:                       1, // initial Id
+		ConfigCount:              1, // initial Count
+		IsPublic:                 true,
+		NodeP2PIds:               nodeSet,
+		CapabilityConfigurations: cfgs,
+	}, s.DONs[0])
+
+	assert.Len(t, s.Nodes, 3)
+	assert.Equal(t, nodes, s.Nodes)
 }
