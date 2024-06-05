@@ -34,19 +34,12 @@ func (r *remoteRegistryReader) state(ctx context.Context) (state, error) {
 		return state{}, err
 	}
 
-	nodes := struct {
-		NodeInfo     []kcr.CapabilityRegistryNodeInfo
-		ConfigCounts []uint32
-	}{
-		NodeInfo:     []kcr.CapabilityRegistryNodeInfo{},
-		ConfigCounts: []uint32{},
-	}
+	nodes := &kcr.GetNodes{}
 	err = r.r.GetLatestValue(ctx, "capabilityRegistry", "getNodes", nil, &nodes)
 	if err != nil {
 		return state{}, err
 	}
 
-	// TODO: call getNodes and fetch node-level data too
 	return state{DONs: dons, Capabilities: caps, Nodes: nodes.NodeInfo}, nil
 }
 

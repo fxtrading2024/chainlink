@@ -116,7 +116,7 @@ func randomWord() [32]byte {
 	return [32]byte(word)
 }
 
-func TestReader(t *testing.T) {
+func TestReader_Integration(t *testing.T) {
 	ctx := testutils.Context(t)
 	reg, regAddress, owner, sim := startNewChainWithRegistry(t)
 
