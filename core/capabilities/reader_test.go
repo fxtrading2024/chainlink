@@ -2,6 +2,7 @@ package capabilities
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -10,8 +11,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind/backends"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/smartcontractkit/chainlink-common/pkg/types"
@@ -43,7 +46,7 @@ var writeChainCapability = kcr.CapabilityRegistryCapability{
 	ResponseType: uint8(1),
 }
 
-func startNewChainWithRegistry(t *testing.T) (*kcr.CapabilityRegistry, *bind.TransactOpts, *backends.SimulatedBackend) {
+func startNewChainWithRegistry(t *testing.T) (*kcr.CapabilityRegistry, common.Address, *bind.TransactOpts, *backends.SimulatedBackend) {
 	owner := testutils.MustNewSimTransactor(t)
 
 	oneEth, _ := new(big.Int).SetString("100000000000000000000", 10)
@@ -60,7 +63,7 @@ func startNewChainWithRegistry(t *testing.T) (*kcr.CapabilityRegistry, *bind.Tra
 	fmt.Println("Deployed CapabilityRegistry at", capabilityRegistryAddress.Hex())
 	simulatedBackend.Commit()
 
-	return capabilityRegistry, owner, simulatedBackend
+	return capabilityRegistry, capabilityRegistryAddress, owner, simulatedBackend
 }
 
 type crFactory struct {
@@ -104,15 +107,93 @@ func newChainReaderFactory(t *testing.T, simulatedBackend *backends.SimulatedBac
 	}
 }
 
+func randomWord() [32]byte {
+	word := make([]byte, 32)
+	_, err := rand.Read(word)
+	if err != nil {
+		panic(err)
+	}
+	return [32]byte(word)
+}
+
 func TestReader(t *testing.T) {
 	ctx := testutils.Context(t)
-	reg, owner, sim := startNewChainWithRegistry(t)
+	reg, regAddress, owner, sim := startNewChainWithRegistry(t)
 
 	_, err := reg.AddCapability(owner, writeChainCapability)
 	require.NoError(t, err, "AddCapability failed for %s", writeChainCapability.LabelledName)
 	sim.Commit()
 
-	factory := newChainReaderFactory(t, sim)
-	_, err = newRemoteRegistryReader(ctx, factory, "")
+	cid, err := reg.GetHashedCapabilityId(&bind.CallOpts{}, writeChainCapability.LabelledName, writeChainCapability.Version)
 	require.NoError(t, err)
+
+	_, err = reg.AddNodeOperators(owner, []kcr.CapabilityRegistryNodeOperator{
+		{
+			Admin: owner.From,
+			Name:  "TEST_NOP",
+		},
+	})
+	require.NoError(t, err)
+
+	it, err := reg.FilterNodeOperatorAdded(&bind.FilterOpts{}, []common.Address{})
+	require.NoError(t, err)
+
+	it.Next()
+
+	nodeSet := [][32]byte{
+		randomWord(),
+		randomWord(),
+		randomWord(),
+	}
+
+	_, err = reg.AddNodes(owner, []kcr.CapabilityRegistryNodeInfo{
+		{
+			NodeOperatorId:      uint32(it.Event.NodeOperatorId.Int64()),
+			Signer:              randomWord(),
+			P2pId:               randomWord(),
+			HashedCapabilityIds: [][32]byte{cid},
+		},
+		{
+			NodeOperatorId:      uint32(it.Event.NodeOperatorId.Int64()),
+			Signer:              randomWord(),
+			P2pId:               randomWord(),
+			HashedCapabilityIds: [][32]byte{cid},
+		},
+		{
+			NodeOperatorId:      uint32(it.Event.NodeOperatorId.Int64()),
+			Signer:              randomWord(),
+			P2pId:               randomWord(),
+			HashedCapabilityIds: [][32]byte{cid},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = reg.AddDON(
+		owner,
+		nodeSet,
+		[]kcr.CapabilityRegistryCapabilityConfiguration{
+			{
+				CapabilityId: cid,
+				Config:       []byte(`{"hello": "world"}`),
+			},
+		},
+		true,
+	)
+
+	h := sim.Commit()
+	tx, _, _ := sim.TransactionByHash(ctx, h)
+	fmt.Printf("%+v", tx)
+
+	require.NoError(t, err)
+
+	factory := newChainReaderFactory(t, sim)
+	reader, err := newRemoteRegistryReader(ctx, factory, regAddress.Hex())
+	require.NoError(t, err)
+
+	s, err := reader.state(ctx)
+	require.NoError(t, err)
+	assert.Len(t, s.Capabilities, 1)
+
+	gotCap := s.Capabilities[0]
+	assert.Equal(t, writeChainCapability, gotCap)
 }

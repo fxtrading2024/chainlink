@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/smartcontractkit/chainlink-common/pkg/types"
-	"github.com/smartcontractkit/chainlink/v2/core/gethwrappers/keystone/generated/keystone_capability_registry"
+	kcr "github.com/smartcontractkit/chainlink/v2/core/gethwrappers/keystone/generated/keystone_capability_registry"
 	evmrelaytypes "github.com/smartcontractkit/chainlink/v2/core/services/relay/evm/types"
 )
 
@@ -13,29 +13,25 @@ type remoteRegistryReader struct {
 	r types.ContractReader
 }
 
-type don struct {
-	// ID is the unique identifier of the DON in the CR.
-	ID uint32
-
-	// IsPublic indicates whether this DON's capabilities can be accessed publicly.
-	IsPublic bool
-
-	// Nodes is the list of nodes in this DON, represented by their RageP2P public keys/IDs.
-	Nodes [][]byte
-}
-
 type state struct {
-	DONs []don
+	DONs         []kcr.CapabilityRegistryDONInfo
+	Capabilities []kcr.CapabilityRegistryCapability
 }
 
 func (r *remoteRegistryReader) state(ctx context.Context) (state, error) {
-	dons := []don{}
+	dons := []kcr.CapabilityRegistryDONInfo{}
 	err := r.r.GetLatestValue(ctx, "capabilityRegistry", "getDONs", nil, &dons)
 	if err != nil {
 		return state{}, err
 	}
 
-	return state{DONs: dons}, nil
+	caps := []kcr.CapabilityRegistryCapability{}
+	err = r.r.GetLatestValue(ctx, "capabilityRegistry", "getCapabilities", nil, &caps)
+	if err != nil {
+		return state{}, err
+	}
+
+	return state{DONs: dons, Capabilities: caps}, nil
 }
 
 type contractReaderFactory interface {
@@ -46,10 +42,13 @@ func newRemoteRegistryReader(ctx context.Context, relayer contractReaderFactory,
 	contractReaderConfig := evmrelaytypes.ChainReaderConfig{
 		Contracts: map[string]evmrelaytypes.ChainContractReader{
 			"capabilityRegistry": {
-				ContractABI: keystone_capability_registry.CapabilityRegistryABI,
+				ContractABI: kcr.CapabilityRegistryABI,
 				Configs: map[string]*evmrelaytypes.ChainReaderDefinition{
 					"getDONs": {
 						ChainSpecificName: "getDONs",
+					},
+					"getCapabilities": {
+						ChainSpecificName: "getCapabilities",
 					},
 				},
 			},
