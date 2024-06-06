@@ -21,6 +21,7 @@ import (
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/remote"
 	remotetypes "github.com/smartcontractkit/chainlink/v2/core/capabilities/remote/types"
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/streams"
+	kcr "github.com/smartcontractkit/chainlink/v2/core/gethwrappers/keystone/generated/keystone_capability_registry"
 	"github.com/smartcontractkit/chainlink/v2/core/logger"
 	p2ptypes "github.com/smartcontractkit/chainlink/v2/core/services/p2p/types"
 )
@@ -122,9 +123,86 @@ func (s *registrySyncer) syncLoop() {
 }
 
 func (s *registrySyncer) sync(ctx context.Context) error {
-	_, err := s.reader.state(ctx)
+	state, err := s.reader.state(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to sync with remote registry: %w", err)
+	}
+
+	// Let's start by updating the list of Peers
+	// We do this by creating a new entry for each node belonging
+	// to a public DON.
+	// We also add the hardcoded peers determined by the NetworkSetup.
+	allPeers := make(map[ragetypes.PeerID]p2ptypes.StreamConfig)
+	// TODO: Remove this when we're no longer hard-coding
+	// a `networkSetup`.
+	for p, cfg := range s.networkSetup.allPeers {
+		allPeers[p] = cfg
+	}
+
+	publicDONs := []kcr.CapabilityRegistryDONInfo{}
+	for _, d := range state.DONs {
+		if !d.IsPublic {
+			continue
+		}
+
+		publicDONs = append(publicDONs, d)
+
+		for _, nid := range d.NodeP2PIds {
+			allPeers[nid] = defaultStreamConfig
+		}
+	}
+	s.peerWrapper.GetPeer().UpdateConnections(allPeers)
+
+	// Next, we need to split the DONs into the following:
+	// - workflow DONs the current node is a part of.
+	// These will need remote shims to all remote capabilities on other DONs.
+	// - remote capability DONs the current node is a part of.
+	// These need server-side shims.
+	myID := s.peerWrapper.GetPeer().ID()
+	myWorkflowDONs := []kcr.CapabilityRegistryDONInfo{}
+	remoteCapabilityDONs := []kcr.CapabilityRegistryDONInfo{}
+	myCapabilityDONs := []kcr.CapabilityRegistryDONInfo{}
+	for _, d := range publicDONs {
+		isDONForMyID := false
+		for _, peerID := range d.NodeP2PIds {
+			if peerID == myID {
+				isDONForMyID = true
+			}
+		}
+
+		if isDONForMyID && d.acceptsWorkflows {
+			myWorkflowDONs = append(myWorkflowDONs, d)
+		}
+
+		if len(d.CapabilityConfigurations) > 0 {
+			if isDONForMyID {
+				myCapabilityDONs = append(myCapabilityDONs, d)
+			} else {
+				remoteCapabilityDONs = append(remoteCapabilityDONs, d)
+			}
+		}
+	}
+
+	if len(myWorkflowDONs) > 0 {
+		for _, rcd := range remoteCapabilityDONs {
+			for _, _ = range rcd.CapabilityConfigurations {
+				// TODO: add shims
+				// use the capabilityId to fetch
+				// the capability entry
+				// switch on the type
+				// instantiate the subscriber
+			}
+		}
+	}
+
+	if len(myCapabilityDONs) > 0 {
+		for _, _ = range myCapabilityDONs {
+			// TODO: add server-side shims
+			// use the capabilityId to fetch
+			// the capability entry
+			// switch on the type
+			// instantiate the subscriber
+		}
 	}
 
 	return nil

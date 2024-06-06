@@ -16,9 +16,9 @@ type remoteRegistryReader struct {
 var _ reader = (*remoteRegistryReader)(nil)
 
 type state struct {
-	DONs         []kcr.CapabilityRegistryDONInfo
-	Capabilities []kcr.CapabilityRegistryCapability
-	Nodes        []kcr.CapabilityRegistryNodeInfo
+	DONs              []kcr.CapabilityRegistryDONInfo
+	IDsToNodes        map[[32]byte]kcr.CapabilityRegistryNodeInfo
+	IDsToCapabilities map[[32]byte]kcr.CapabilityRegistryCapability
 }
 
 func (r *remoteRegistryReader) state(ctx context.Context) (state, error) {
@@ -34,13 +34,23 @@ func (r *remoteRegistryReader) state(ctx context.Context) (state, error) {
 		return state{}, err
 	}
 
+	idsToCapabilities := map[[32]byte]kcr.CapabilityRegistryCapability{}
+	for _, c := range caps {
+		idsToCapabilities[c.CapabilityId] = c
+	}
+
 	nodes := &kcr.GetNodes{}
 	err = r.r.GetLatestValue(ctx, "capabilityRegistry", "getNodes", nil, &nodes)
 	if err != nil {
 		return state{}, err
 	}
 
-	return state{DONs: dons, Capabilities: caps, Nodes: nodes.NodeInfo}, nil
+	idsToNodes := map[[32]byte]kcr.CapabilityRegistryNodeInfo{}
+	for _, node := range nodes.NodeInfo {
+		idsToNodes[node.P2pId] = node
+	}
+
+	return state{DONs: dons, IDsToCapabilities: idsToCapabilities, IDsToNodes: idsToNodes}, nil
 }
 
 type contractReaderFactory interface {

@@ -189,9 +189,9 @@ func TestReader_Integration(t *testing.T) {
 
 	s, err := reader.state(ctx)
 	require.NoError(t, err)
-	assert.Len(t, s.Capabilities, 1)
+	assert.Len(t, s.IDsToCapabilities, 1)
 
-	gotCap := s.Capabilities[0]
+	gotCap := s.IDsToCapabilities[cid]
 	assert.Equal(t, writeChainCapability, gotCap)
 
 	assert.Len(t, s.DONs, 1)
@@ -203,6 +203,10 @@ func TestReader_Integration(t *testing.T) {
 		CapabilityConfigurations: cfgs,
 	}, s.DONs[0])
 
-	assert.Len(t, s.Nodes, 3)
-	assert.Equal(t, nodes, s.Nodes)
+	assert.Len(t, s.IDsToNodes, 3)
+	assert.Equal(t, map[[32]byte]kcr.CapabilityRegistryNodeInfo{
+		nodeSet[0]: nodes[0],
+		nodeSet[1]: nodes[1],
+		nodeSet[2]: nodes[2],
+	}, s.IDsToNodes)
 }
