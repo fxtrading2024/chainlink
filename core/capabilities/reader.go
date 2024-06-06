@@ -36,7 +36,21 @@ func (r *remoteRegistryReader) state(ctx context.Context) (state, error) {
 
 	idsToCapabilities := map[[32]byte]kcr.CapabilityRegistryCapability{}
 	for _, c := range caps {
-		idsToCapabilities[c.CapabilityId] = c
+		// TODO: Remove this once the hashedCapabilityId is returned by getCapabilities
+		// This is O(N) and should be addressed as soon as possible.
+		args := struct {
+			LabelledName string
+			Version      string
+		}{
+			LabelledName: c.LabelledName,
+			Version:      c.Version,
+		}
+		var capabilityID [32]byte
+		err := r.r.GetLatestValue(ctx, "capabilityRegistry", "getHashedCapabilityId", &args, &capabilityID)
+		if err != nil {
+			return state{}, nil
+		}
+		idsToCapabilities[capabilityID] = c
 	}
 
 	nodes := &kcr.GetNodes{}
@@ -71,6 +85,9 @@ func newRemoteRegistryReader(ctx context.Context, relayer contractReaderFactory,
 					},
 					"getNodes": {
 						ChainSpecificName: "getNodes",
+					},
+					"getHashedCapabilityId": {
+						ChainSpecificName: "getHashedCapabilityId",
 					},
 				},
 			},

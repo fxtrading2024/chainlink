@@ -9,6 +9,7 @@ import (
 
 	"github.com/smartcontractkit/chainlink-common/pkg/capabilities"
 	commoncap "github.com/smartcontractkit/chainlink-common/pkg/capabilities"
+	"github.com/smartcontractkit/chainlink-common/pkg/services"
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/remote/target/request"
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/remote/types"
 	"github.com/smartcontractkit/chainlink/v2/core/logger"
@@ -22,6 +23,8 @@ import (
 //
 // client communicates with corresponding server on remote nodes.
 type client struct {
+	services.StateMachine
+	stopChan             services.StopChan
 	lggr                 logger.Logger
 	remoteCapabilityInfo commoncap.CapabilityInfo
 	localDONInfo         capabilities.DON
@@ -34,10 +37,12 @@ type client struct {
 
 var _ commoncap.TargetCapability = &client{}
 var _ types.Receiver = &client{}
+var _ services.Service = &client{}
 
-func NewClient(ctx context.Context, lggr logger.Logger, remoteCapabilityInfo commoncap.CapabilityInfo, localDonInfo capabilities.DON, dispatcher types.Dispatcher,
+func NewClient(lggr logger.Logger, remoteCapabilityInfo commoncap.CapabilityInfo, localDonInfo capabilities.DON, dispatcher types.Dispatcher,
 	requestTimeout time.Duration) *client {
 	c := &client{
+		stopChan:                 make(services.StopChan),
 		lggr:                     lggr,
 		remoteCapabilityInfo:     remoteCapabilityInfo,
 		localDONInfo:             localDonInfo,
@@ -46,20 +51,44 @@ func NewClient(ctx context.Context, lggr logger.Logger, remoteCapabilityInfo com
 		messageIDToCallerRequest: make(map[string]*request.ClientRequest),
 	}
 
-	go func() {
-		ticker := time.NewTicker(requestTimeout)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				c.expireRequests()
-			}
-		}
-	}()
-
 	return c
+}
+
+func (c *client) Start(ctx context.Context) error {
+	return c.StartOnce(c.Name(), func() error {
+		go func() {
+			ticker := time.NewTicker(c.requestTimeout)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-c.stopChan:
+					return
+				case <-ticker.C:
+					c.expireRequests()
+				}
+			}
+		}()
+		return nil
+	})
+}
+
+func (c *client) Close() error {
+	return c.StopOnce(c.Name(), func() error {
+		close(c.stopChan)
+		return nil
+	})
+}
+
+func (c *client) Ready() error {
+	return nil
+}
+
+func (c *client) HealthReport() map[string]error {
+	return nil
+}
+
+func (c *client) Name() string {
+	return "RemoteTargetClient"
 }
 
 func (c *client) expireRequests() {
@@ -116,7 +145,7 @@ func (c *client) Receive(msg *types.MessageBody) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	// TODO should the dispatcher be passing in a context?
-	ctx := context.Background()
+	ctx, _ := c.stopChan.NewCtx()
 
 	messageID := GetMessageID(msg)
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	commoncap "github.com/smartcontractkit/chainlink-common/pkg/capabilities"
+	"github.com/smartcontractkit/chainlink-common/pkg/services"
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/remote/target/request"
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/remote/types"
 	p2ptypes "github.com/smartcontractkit/chainlink/v2/core/services/p2p/types"
@@ -23,6 +24,8 @@ import (
 //
 // server communicates with corresponding client on remote nodes.
 type server struct {
+	services.StateMachine
+	stopChan     services.StopChan
 	lggr         logger.Logger
 	peerID       p2ptypes.PeerID
 	underlying   commoncap.TargetCapability
@@ -38,10 +41,12 @@ type server struct {
 }
 
 var _ types.Receiver = &server{}
+var _ services.Service = &server{}
 
-func NewReceiver(ctx context.Context, lggr logger.Logger, peerID p2ptypes.PeerID, underlying commoncap.TargetCapability, capInfo commoncap.CapabilityInfo, localDonInfo capabilities.DON,
+func NewReceiver(lggr logger.Logger, peerID p2ptypes.PeerID, underlying commoncap.TargetCapability, capInfo commoncap.CapabilityInfo, localDonInfo capabilities.DON,
 	workflowDONs map[string]commoncap.DON, dispatcher types.Dispatcher, requestTimeout time.Duration) *server {
 	r := &server{
+
 		underlying:   underlying,
 		peerID:       peerID,
 		capInfo:      capInfo,
@@ -55,20 +60,44 @@ func NewReceiver(ctx context.Context, lggr logger.Logger, peerID p2ptypes.PeerID
 		lggr: lggr,
 	}
 
-	go func() {
-		ticker := time.NewTicker(requestTimeout)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				r.expireRequests()
-			}
-		}
-	}()
-
 	return r
+}
+
+func (r *server) Start(ctx context.Context) error {
+	return r.StartOnce(r.Name(), func() error {
+		go func() {
+			ticker := time.NewTicker(r.requestTimeout)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-r.stopChan:
+					return
+				case <-ticker.C:
+					r.expireRequests()
+				}
+			}
+		}()
+		return nil
+	})
+}
+
+func (r *server) Close() error {
+	return r.StopOnce(r.Name(), func() error {
+		close(r.stopChan)
+		return nil
+	})
+}
+
+func (r *server) Ready() error {
+	return nil
+}
+
+func (r *server) HealthReport() map[string]error {
+	return nil
+}
+
+func (r *server) Name() string {
+	return "RemoteTargetServer"
 }
 
 func (r *server) expireRequests() {
@@ -91,8 +120,7 @@ func (r *server) expireRequests() {
 func (r *server) Receive(msg *types.MessageBody) {
 	r.receiveLock.Lock()
 	defer r.receiveLock.Unlock()
-	// TODO should the dispatcher be passing in a context?
-	ctx := context.Background()
+	ctx, _ := r.stopChan.NewCtx()
 
 	if msg.Method != types.MethodExecute {
 		r.lggr.Errorw("received request for unsupported method type", "method", msg.Method)

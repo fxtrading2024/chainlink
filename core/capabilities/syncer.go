@@ -3,6 +3,7 @@ package capabilities
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
 	"slices"
@@ -19,6 +20,7 @@ import (
 	ragetypes "github.com/smartcontractkit/libocr/ragep2p/types"
 
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/remote"
+	"github.com/smartcontractkit/chainlink/v2/core/capabilities/remote/target"
 	remotetypes "github.com/smartcontractkit/chainlink/v2/core/capabilities/remote/types"
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/streams"
 	kcr "github.com/smartcontractkit/chainlink/v2/core/gethwrappers/keystone/generated/keystone_capability_registry"
@@ -46,7 +48,7 @@ type registrySyncer struct {
 var _ services.Service = &registrySyncer{}
 
 var (
-	defaultTickInterval = time.Duration(12 * time.Minute)
+	defaultTickInterval = time.Duration(12 * time.Second)
 )
 
 var defaultStreamConfig = p2ptypes.StreamConfig{
@@ -160,8 +162,9 @@ func (s *registrySyncer) sync(ctx context.Context) error {
 	// These need server-side shims.
 	myID := s.peerWrapper.GetPeer().ID()
 	myWorkflowDONs := []kcr.CapabilityRegistryDONInfo{}
-	remoteCapabilityDONs := []kcr.CapabilityRegistryDONInfo{}
+	remoteWorkflowDONs := []kcr.CapabilityRegistryDONInfo{}
 	myCapabilityDONs := []kcr.CapabilityRegistryDONInfo{}
+	remoteCapabilityDONs := []kcr.CapabilityRegistryDONInfo{}
 	for _, d := range publicDONs {
 		isDONForMyID := false
 		for _, peerID := range d.NodeP2PIds {
@@ -170,8 +173,12 @@ func (s *registrySyncer) sync(ctx context.Context) error {
 			}
 		}
 
-		if isDONForMyID && d.acceptsWorkflows {
-			myWorkflowDONs = append(myWorkflowDONs, d)
+		if d.AcceptsWorkflows {
+			if isDONForMyID {
+				myWorkflowDONs = append(myWorkflowDONs, d)
+			} else {
+				remoteWorkflowDONs = append(remoteWorkflowDONs, d)
+			}
 		}
 
 		if len(d.CapabilityConfigurations) > 0 {
@@ -183,28 +190,299 @@ func (s *registrySyncer) sync(ctx context.Context) error {
 		}
 	}
 
+	// Now, if my node is a workflow DON, let's setup any shims
+	// to external capabilities.
 	if len(myWorkflowDONs) > 0 {
 		for _, rcd := range remoteCapabilityDONs {
-			for _, _ = range rcd.CapabilityConfigurations {
-				// TODO: add shims
-				// use the capabilityId to fetch
-				// the capability entry
-				// switch on the type
-				// instantiate the subscriber
+			err := s.addRemoteCapabilities(ctx, rcd, state)
+			if err != nil {
+				return err
 			}
 		}
 	}
 
+	// Finally, if I'm a capability DON, let's enable external access
+	// to the capability.
 	if len(myCapabilityDONs) > 0 {
-		for _, _ = range myCapabilityDONs {
-			// TODO: add server-side shims
-			// use the capabilityId to fetch
-			// the capability entry
-			// switch on the type
-			// instantiate the subscriber
+		for _, mcd := range myCapabilityDONs {
+			err := s.enableExternalAccess(ctx, myID, mcd, state, remoteWorkflowDONs)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
+	return nil
+}
+
+func signersFor(don kcr.CapabilityRegistryDONInfo, state state) ([][]byte, error) {
+	s := [][]byte{}
+	for _, nodeID := range don.NodeP2PIds {
+		node, ok := state.IDsToNodes[nodeID]
+		if !ok {
+			return nil, fmt.Errorf("could not find node for id %s", nodeID)
+		}
+
+		s = append(s, node.Signer[:])
+	}
+
+	return s, nil
+}
+
+func toDONInfo(don kcr.CapabilityRegistryDONInfo) *capabilities.DON {
+	peerIDs := []p2ptypes.PeerID{}
+	for _, p := range don.NodeP2PIds {
+		peerIDs = append(peerIDs, p)
+	}
+	return &capabilities.DON{
+		ID:      fmt.Sprint(don.Id),
+		Members: peerIDs,
+		// TODO: risk of overflow, as don.F = uint32 and this F = uint8
+		// Remove the coercion when addressed in the contract.
+		F: uint8(don.F),
+	}
+}
+
+func (s *registrySyncer) addRemoteCapabilities(ctx context.Context, don kcr.CapabilityRegistryDONInfo, state state) error {
+	for _, c := range don.CapabilityConfigurations {
+		capability, ok := state.IDsToCapabilities[c.CapabilityId]
+		if !ok {
+			return fmt.Errorf("could not find capability matching id %s", c.CapabilityId)
+		}
+
+		switch capability.CapabilityType {
+		// trigger
+		case 0:
+			newTriggerFn := func(info capabilities.CapabilityInfo) (capabilityService, error) {
+				codec := streams.NewCodec(s.lggr)
+
+				signers, err := signersFor(don, state)
+				if err != nil {
+					return nil, err
+				}
+
+				aggregator := triggers.NewMercuryRemoteAggregator(
+					codec,
+					signers,
+					int(don.F+1),
+					s.lggr,
+				)
+				config := remotetypes.RemoteTriggerConfig{
+					RegistrationRefreshMs:   20000,
+					RegistrationExpiryMs:    60000,
+					MinResponsesToAggregate: uint32(s.networkSetup.TriggerCapabilityDonInfo.F) + 1,
+				}
+				// TODO: We need to implement a custom, Mercury-specific
+				// aggregator here, because there is no guarantee that
+				// all trigger events in the workflow will have the same
+				// payloads. As a workaround, we validate the signatures.
+				// When this is solved, we can move to a generic aggregator
+				// and remove this.
+				triggerCap := remote.NewTriggerSubscriber(
+					config,
+					info,
+					s.networkSetup.TriggerCapabilityDonInfo,
+					s.networkSetup.WorkflowsDonInfo,
+					s.dispatcher,
+					aggregator,
+					s.lggr,
+				)
+				return triggerCap, nil
+			}
+			err := s.addToRegistryAndSetDispatcher(ctx, capability, don, newTriggerFn)
+			if err != nil {
+				s.lggr.Errorf("failed to add trigger shim: %w", err)
+			}
+		// action
+		case 1:
+			s.lggr.Warn("no remote client configured for capability type action, skipping configuration")
+		// consensus
+		case 2:
+			s.lggr.Warn("no remote client configured for capability type consensus, skipping configuration")
+		// target
+		case 3:
+			newTargetFn := func(info capabilities.CapabilityInfo) (capabilityService, error) {
+				client := target.NewClient(
+					s.lggr,
+					info,
+					*toDONInfo(don),
+					s.dispatcher,
+					defaultTargetRequestTimeout,
+				)
+				return client, nil
+			}
+
+			err := s.addToRegistryAndSetDispatcher(ctx, capability, don, newTargetFn)
+			if err != nil {
+				s.lggr.Errorf("failed to add target shim: %w", err)
+			}
+		default:
+			s.lggr.Warnf("unknown capability type, skipping configuration: %+v", capability)
+		}
+	}
+	return nil
+}
+
+type capabilityService interface {
+	capabilities.BaseCapability
+	remotetypes.Receiver
+	services.Service
+}
+
+func (s *registrySyncer) addToRegistryAndSetDispatcher(ctx context.Context, capabilityInfo kcr.CapabilityRegistryCapability, don kcr.CapabilityRegistryDONInfo, newCapFn func(info capabilities.CapabilityInfo) (capabilityService, error)) error {
+	info, err := capabilities.NewRemoteCapabilityInfo(
+		capabilityInfo.LabelledName,
+		capabilities.CapabilityTypeTrigger,
+		fmt.Sprintf("Remote Trigger for %s@%s", capabilityInfo.LabelledName, capabilityInfo.Version),
+		capabilityInfo.Version,
+		toDONInfo(don),
+	)
+	if err != nil {
+		return err
+	}
+	capability, err := newCapFn(info)
+	if err != nil {
+		return err
+	}
+
+	err = s.registry.Add(ctx, capability)
+	if err != nil {
+		// If the capability already exists, we've handled this in
+		// a previous syncer iteration, let's skip and move on
+		// to other capabilities.
+		if errors.Is(err, ErrCapabilityAlreadyExists) {
+			return nil
+		}
+
+		return err
+	}
+
+	err = s.dispatcher.SetReceiver(
+		capabilityInfo.LabelledName,
+		fmt.Sprint(don.Id),
+		capability,
+	)
+	if err != nil {
+		return err
+	}
+	err = capability.Start(ctx)
+	if err != nil {
+		return err
+	}
+	s.subServices = append(s.subServices, capability)
+	return nil
+}
+
+var (
+	defaultTargetRequestTimeout = time.Minute
+)
+
+func (s *registrySyncer) enableExternalAccess(ctx context.Context, myPeerID p2ptypes.PeerID, don kcr.CapabilityRegistryDONInfo, state state, remoteWorkflowDONs []kcr.CapabilityRegistryDONInfo) error {
+	idsToDONs := map[string]capabilities.DON{}
+	for _, d := range remoteWorkflowDONs {
+		idsToDONs[fmt.Sprint(d.Id)] = *toDONInfo(d)
+	}
+
+	for _, c := range don.CapabilityConfigurations {
+		capability, ok := state.IDsToCapabilities[c.CapabilityId]
+		if !ok {
+			return fmt.Errorf("could not find capability matching id %s", c.CapabilityId)
+		}
+
+		switch capability.CapabilityType {
+		// trigger
+		case 0:
+			newTriggerPublisher := func(capability capabilities.BaseCapability, info capabilities.CapabilityInfo) (receiverService, error) {
+				config := remotetypes.RemoteTriggerConfig{
+					RegistrationRefreshMs:   20000,
+					RegistrationExpiryMs:    60000,
+					MinResponsesToAggregate: uint32(don.F) + 1,
+				}
+				publisher := remote.NewTriggerPublisher(
+					config,
+					capability.(capabilities.TriggerCapability),
+					info,
+					*toDONInfo(don),
+					idsToDONs,
+					s.dispatcher,
+					s.lggr,
+				)
+				return publisher, nil
+			}
+
+			err := s.addReceiver(ctx, capability, don, newTriggerPublisher)
+			if err != nil {
+				s.lggr.Errorf("failed to add server-side receiver: %w", err)
+			}
+		// action
+		case 1:
+			s.lggr.Warn("no remote client configured for capability type action, skipping configuration")
+		// consensus
+		case 2:
+			s.lggr.Warn("no remote client configured for capability type consensus, skipping configuration")
+		// target
+		case 3:
+			newTargetReceiver := func(capability capabilities.BaseCapability, info capabilities.CapabilityInfo) (receiverService, error) {
+				return target.NewReceiver(
+					s.lggr,
+					myPeerID,
+					capability.(capabilities.TargetCapability),
+					info,
+					*toDONInfo(don),
+					idsToDONs,
+					s.dispatcher,
+					defaultTargetRequestTimeout,
+				), nil
+			}
+
+			err := s.addReceiver(ctx, capability, don, newTargetReceiver)
+			if err != nil {
+				s.lggr.Errorf("failed to add server-side receiver: %w", err)
+			}
+		default:
+			s.lggr.Warnf("unknown capability type, skipping configuration: %+v", capability)
+		}
+	}
+	return nil
+}
+
+type receiverService interface {
+	services.Service
+	remotetypes.Receiver
+}
+
+func (s *registrySyncer) addReceiver(ctx context.Context, capability kcr.CapabilityRegistryCapability, don kcr.CapabilityRegistryDONInfo, newReceiverFn func(capability capabilities.BaseCapability, info capabilities.CapabilityInfo) (receiverService, error)) error {
+	info, err := capabilities.NewRemoteCapabilityInfo(
+		capability.LabelledName,
+		capabilities.CapabilityTypeTrigger,
+		fmt.Sprintf("Remote Trigger for %s@%s", capability.LabelledName, capability.Version),
+		capability.Version,
+		toDONInfo(don),
+	)
+	if err != nil {
+		return err
+	}
+	underlying, err := s.registry.Get(ctx, capability.LabelledName)
+	if err != nil {
+		return err
+	}
+
+	receiver, err := newReceiverFn(underlying, info)
+	if err != nil {
+		return err
+	}
+
+	err = s.dispatcher.SetReceiver(capability.LabelledName, fmt.Sprint(don.Id), receiver)
+	if err != nil {
+		return err
+	}
+
+	err = receiver.Start(ctx)
+	if err != nil {
+		return err
+	}
+
+	s.subServices = append(s.subServices, receiver)
 	return nil
 }
 

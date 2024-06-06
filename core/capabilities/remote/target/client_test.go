@@ -168,7 +168,8 @@ func testClient(ctx context.Context, t *testing.T, numWorkflowPeers int, workflo
 	callers := make([]commoncap.TargetCapability, numWorkflowPeers)
 	for i := 0; i < numWorkflowPeers; i++ {
 		workflowPeerDispatcher := broker.NewDispatcherForNode(workflowPeers[i])
-		caller := target.NewClient(ctx, lggr, capInfo, workflowDonInfo, workflowPeerDispatcher, workflowNodeResponseTimeout)
+		caller := target.NewClient(lggr, capInfo, workflowDonInfo, workflowPeerDispatcher, workflowNodeResponseTimeout)
+		require.NoError(t, caller.Start(ctx))
 		broker.RegisterReceiverNode(workflowPeers[i], caller)
 		callers[i] = caller
 	}

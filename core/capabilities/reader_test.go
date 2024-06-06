@@ -28,21 +28,9 @@ import (
 	evmrelaytypes "github.com/smartcontractkit/chainlink/v2/core/services/relay/evm/types"
 )
 
-func stringToByteWord(in string) [32]byte {
-	out := [32]byte{}
-	copy(out[:], []byte(in))
-	return out
-}
-
-var dataStreamsReportCapability = kcr.CapabilityRegistryCapability{
-	LabelledName: stringToByteWord("data-streams-report"),
-	Version:      stringToByteWord("1.0.0"),
-	ResponseType: uint8(0),
-}
-
 var writeChainCapability = kcr.CapabilityRegistryCapability{
-	LabelledName: stringToByteWord("write-chain"),
-	Version:      stringToByteWord("1.0.1"),
+	LabelledName: "write-chain",
+	Version:      "1.0.1",
 	ResponseType: uint8(1),
 }
 
@@ -178,6 +166,8 @@ func TestReader_Integration(t *testing.T) {
 		nodeSet,
 		cfgs,
 		true,
+		true,
+		1,
 	)
 	sim.Commit()
 
@@ -199,6 +189,8 @@ func TestReader_Integration(t *testing.T) {
 		Id:                       1, // initial Id
 		ConfigCount:              1, // initial Count
 		IsPublic:                 true,
+		AcceptsWorkflows:         true,
+		F:                        1,
 		NodeP2PIds:               nodeSet,
 		CapabilityConfigurations: cfgs,
 	}, s.DONs[0])
